@@ -39,27 +39,14 @@ pub fn perr(line: usize, message: []const u8) !void {
     try report(line, "", message);
 }
 
-pub fn app(diag: *?AppError) AppErrorKind!void {
-    var args_iter = try std.process.argsWithAllocator(Allocator);
-    defer args_iter.deinit();
-
-    if (!args_iter.skip()) {
-        diag.* = AppError.WrongArgs;
-        return AppErrorKind.WrongArgs;
-    }
-
-    var args = std.ArrayList([]const u8).init(Allocator);
-    defer args.deinit();
-
-    while (args_iter.next()) |arg| try args.append(arg);
-
+pub fn app(args: [][]const u8, diag: *?AppError) AppErrorKind!void {
     var comp_diag: ?std.ArrayList(CompError) = null;
-    switch (args.items.len) {
+    switch (args.len) {
         0 => runRepl(),
-        1 => runFile(args.items[0], &comp_diag) catch |err| {
+        1 => runFile(args[0], &comp_diag) catch |err| {
             switch (err) {
                 error.FileNotFound, error.AccessDenied, error.FileTooBig, error.IsDir => {
-                    diag.* = AppError{ .FileRead = .{ .kind = err, .file = args.items[0] } };
+                    diag.* = AppError{ .FileRead = .{ .kind = err, .file = args[0] } };
                     return AppErrorKind.FileRead;
                 },
                 error.CompError => {
@@ -78,11 +65,20 @@ pub fn app(diag: *?AppError) AppErrorKind!void {
 
 pub fn main() !void {
     cio.init();
+    var args_iter = try std.process.argsWithAllocator(Allocator);
+    defer args_iter.deinit();
+
+    if (!args_iter.skip()) @panic("Error no se encontro la ruta del ejecutable");
+
+    var args = std.ArrayList([]const u8).init(Allocator);
+    defer args.deinit();
+
+    while (args_iter.next()) |arg| try args.append(arg);
 
     var diagnostics: ?AppError = null;
-    app(&diagnostics) catch |err| {
+
+    app(args.items, &diagnostics) catch |err| {
         const diag = diagnostics.?;
-        defer Allocator.free(diag);
 
         switch (err) {
             AppErrorKind.WrongArgs => {
@@ -97,7 +93,6 @@ pub fn main() !void {
             },
             AppErrorKind.OutOfMemory => {},
         }
-        std.process.exit(1);
     };
 }
 

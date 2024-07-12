@@ -2,15 +2,15 @@ const std = @import("std");
 
 var bout: std.io.BufferedWriter(4096, std.fs.File.Writer) = undefined;
 var berr: std.io.BufferedWriter(4096, std.fs.File.Writer) = undefined;
-var stdout: std.io.AnyWriter = undefined;
-var stderr: std.io.AnyWriter = undefined;
+var stdout: std.io.BufferedWriter(4096, std.fs.File.Writer).Writer = undefined;
+var stderr: std.io.BufferedWriter(4096, std.fs.File.Writer).Writer = undefined;
 
 pub fn init() void {
     bout = std.io.bufferedWriter(std.io.getStdOut().writer());
     berr = std.io.bufferedWriter(std.io.getStdErr().writer());
 
-    stdout = bout.writer().any();
-    stderr = berr.writer().any();
+    stdout = bout.writer();
+    stderr = berr.writer();
 }
 
 pub fn print(comptime format: []const u8, args: anytype) void {

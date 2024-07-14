@@ -1,3 +1,5 @@
+// zig fmt: off
+
 const std = @import("std");
 const cio = @import("io.zig");
 const Scanner = @import("scanner.zig").Scanner;
@@ -8,8 +10,17 @@ const Allocator = std.heap.page_allocator;
 
 var had_error = false;
 
-const AppErrorKind = error{ WrongArgs, CompError, FileRead, OutOfMemory };
-const AppError = union(enum) { WrongArgs, CompError: struct { errors: std.ArrayList(CompError) }, FileRead: struct { kind: anyerror, file: []const u8 } };
+const RunError = error{CompError};
+
+const AppErrorKind = error{
+    WrongArgs, CompError,
+    FileRead, OutOfMemory
+};
+const AppError = union(enum) {
+    WrongArgs,
+    CompError: struct { errors: std.ArrayList(CompError) },
+    FileRead: struct { kind: anyerror, file: []const u8 }
+}; // AppError
 
 const CompErrorKind = error{Syntax};
 const CompError = union(enum) {
@@ -26,9 +37,8 @@ const CompError = union(enum) {
             },
         }
     }
-};
+}; // CompError
 
-const RunError = error{CompError};
 
 pub fn report(line: usize, where: []const u8, message: []const u8) !void {
     cio.eprintln("[line: {}] Error {s}: {s}", .{ line, where, message });
@@ -39,8 +49,8 @@ pub fn perr(line: usize, message: []const u8) !void {
     try report(line, "", message);
 }
 
-pub fn app(args: [][]const u8, diag: *?AppError) AppErrorKind!void {
-    var comp_diag: ?std.ArrayList(CompError) = null;
+pub fn app(args: [][]const u8, diag: *AppError) AppErrorKind!void {
+    var comp_diag: std.ArrayList(CompError) = undefined;
     switch (args.len) {
         0 => runRepl(),
         1 => runFile(args[0], &comp_diag) catch |err| {
@@ -50,7 +60,7 @@ pub fn app(args: [][]const u8, diag: *?AppError) AppErrorKind!void {
                     return AppErrorKind.FileRead;
                 },
                 error.CompError => {
-                    diag.* = AppError{ .CompError = .{ .errors = comp_diag.? } };
+                    diag.* = AppError{ .CompError = .{ .errors = comp_diag } };
                     return AppErrorKind.CompError;
                 },
                 else => unreachable,
@@ -61,25 +71,27 @@ pub fn app(args: [][]const u8, diag: *?AppError) AppErrorKind!void {
             return AppErrorKind.WrongArgs;
         },
     }
-}
+} // app
 
 pub fn main() !void {
     cio.init();
-    var args_iter = try std.process.argsWithAllocator(Allocator);
+    var args_iter = try std
+        .process
+        .argsWithAllocator(Allocator);
     defer args_iter.deinit();
 
-    if (!args_iter.skip()) @panic("Error no se encontro la ruta del ejecutable");
+    if (!args_iter.skip()) 
+        @panic("Error no se encontro la ruta del ejecutable");
 
-    var args = std.ArrayList([]const u8).init(Allocator);
+    var args = std
+        .ArrayList([]const u8)
+        .init(Allocator);
     defer args.deinit();
 
     while (args_iter.next()) |arg| try args.append(arg);
 
-    var diagnostics: ?AppError = null;
-
-    app(args.items, &diagnostics) catch |err| {
-        const diag = diagnostics.?;
-
+    var diag: AppError = undefined;
+    app(args.items, &diag) catch |err| {
         switch (err) {
             AppErrorKind.WrongArgs => {
                 cio.eprintln("Error: Usage lox <FILE>", .{});
@@ -93,8 +105,8 @@ pub fn main() !void {
             },
             AppErrorKind.OutOfMemory => {},
         }
-    };
-}
+    }; // catch err to return from app
+} // main
 
 fn runRepl() void {
     var bin = std.io.bufferedReader(std.io.getStdIn().reader());
@@ -107,16 +119,15 @@ fn runRepl() void {
         const line = bw.readUntilDelimiterAlloc(Allocator, '\n', MAX_USIZE) catch break;
         defer Allocator.free(line);
 
-        var diagnostics: ?std.ArrayList(CompError) = null;
-        if (run("REPL", line, &diagnostics)) {} else |_| {
-            const diag = diagnostics.?;
+        var diag: std.ArrayList(CompError) = undefined;
+        if (run("REPL", line, &diag)) {} else |_| {
             for (diag.items) |err| err.display();
             diag.deinit();
         }
-    }
-}
+    } // while input line by the user
+} // runRepl()
 
-fn run(from: []const u8, source: []const u8, diag: *?std.ArrayList(CompError)) RunError!void {
+fn run(from: []const u8, source: []const u8, diag: *std.ArrayList(CompError)) RunError!void {
     var scanner = Scanner.new(source);
 
     while (scanner.next()) |token| {
@@ -124,14 +135,14 @@ fn run(from: []const u8, source: []const u8, diag: *?std.ArrayList(CompError)) R
     }
 
     diag.* = std.ArrayList(CompError).init(Allocator);
-    diag.*.?.append(CompError{ .Syntax = .{ .path = from, .line = 10, .col = 2 } }) catch @panic("Error");
+    diag.*.append(CompError{ .Syntax = .{ .path = from, .line = 10, .col = 2 } }) catch @panic("Error");
 
     return RunError.CompError;
 }
 
 const CompOrReadError = error{ FileNotFound, AccessDenied, FileTooBig, IsDir } || RunError;
 
-fn runFile(ruta: []const u8, diag: *?std.ArrayList(CompError)) CompOrReadError!void {
+fn runFile(ruta: []const u8, diag: *std.ArrayList(CompError)) CompOrReadError!void {
     var cwd = std.fs.cwd();
 
     const file = cwd.openFile(ruta, .{ .mode = .read_only }) catch |err| switch (err) {

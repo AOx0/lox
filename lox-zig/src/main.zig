@@ -2,7 +2,9 @@
 
 const std = @import("std");
 const cio = @import("io.zig");
-const Scanner = @import("scanner.zig").Scanner;
+const scanner = @import("scanner.zig");
+const Scanner = scanner.Scanner;
+const TokenType = scanner.TokenType;
 
 const MAX_USIZE = std.math.maxInt(usize);
 const Allocator = std.heap.page_allocator;
@@ -24,17 +26,25 @@ const AppError = union(enum) {
 
 const CompErrorKind = error{Syntax};
 const CompError = union(enum) {
-    Syntax: struct {
+    ScannerError: struct {
         path: []const u8,
         line: usize,
         col: usize,
+        token: []const u8,
+        err: scanner.ErrorKind,
     },
 
     fn display(self: @This()) void {
         switch (self) {
-            .Syntax => {
-                cio.println("{s}:{}:{} Error de sintaxis", .{ self.Syntax.path, self.Syntax.line, self.Syntax.col });
-            },
+            .ScannerError => {
+                cio.println("{s}:{}:{} Scanner error with token {s}: {any}", .{ 
+                    self.ScannerError.path, 
+                    self.ScannerError.line, 
+                    self.ScannerError.col,
+                    self.ScannerError.token,
+                    self.ScannerError.err 
+                });
+            }
         }
     }
 }; // CompError
@@ -49,11 +59,11 @@ pub fn perr(line: usize, message: []const u8) !void {
     try report(line, "", message);
 }
 
-pub fn app(args: [][]const u8, diag: *AppError) AppErrorKind!void {
+pub fn app(args: [][]const u8, buf: *std.ArrayList(u8), diag: *AppError) AppErrorKind!void {
     var comp_diag: std.ArrayList(CompError) = undefined;
     switch (args.len) {
         0 => runRepl(),
-        1 => runFile(args[0], &comp_diag) catch |err| {
+        1 => runFile(args[0], buf, &comp_diag) catch |err| {
             switch (err) {
                 error.FileNotFound, error.AccessDenied, error.FileTooBig, error.IsDir => {
                     diag.* = AppError{ .FileRead = .{ .kind = err, .file = args[0] } };
@@ -75,6 +85,9 @@ pub fn app(args: [][]const u8, diag: *AppError) AppErrorKind!void {
 
 pub fn main() !void {
     cio.init();
+    var buf = std.ArrayList(u8).init(Allocator);
+    defer buf.deinit();
+    
     var args_iter = try std
         .process
         .argsWithAllocator(Allocator);
@@ -91,7 +104,7 @@ pub fn main() !void {
     while (args_iter.next()) |arg| try args.append(arg);
 
     var diag: AppError = undefined;
-    app(args.items, &diag) catch |err| {
+    app(args.items, &buf, &diag) catch |err| {
         switch (err) {
             AppErrorKind.WrongArgs => {
                 cio.eprintln("Error: Usage lox <FILE>", .{});
@@ -128,21 +141,33 @@ fn runRepl() void {
 } // runRepl()
 
 fn run(from: []const u8, source: []const u8, diag: *std.ArrayList(CompError)) RunError!void {
-    var scanner = Scanner.new(source);
-
-    while (scanner.next()) |token| {
-        cio.println("{s}", .{token});
-    }
-
+    var scan = Scanner.new(source);
     diag.* = std.ArrayList(CompError).init(Allocator);
-    diag.*.append(CompError{ .Syntax = .{ .path = from, .line = 10, .col = 2 } }) catch @panic("Error");
-
-    return RunError.CompError;
+    defer if (diag.items.len == 0) diag.deinit();
+    
+    while (scan.next()) |result| {
+        switch (result) {
+            .Ok => {
+                cio.println("{any}", .{result.Ok});
+            },
+            .Err => {
+                 diag.append(CompError{.ScannerError = .{
+                     .path = from, 
+                     .line = 0, 
+                     .col = 0, 
+                     .token = source[result.Err.range.start .. result.Err.range.end],
+                     .err =  result.Err.kind,
+                 }}) catch @panic("Failed to push");
+                
+            }
+        }
+    }
+    if (diag.items.len != 0) return RunError.CompError;
 }
 
 const CompOrReadError = error{ FileNotFound, AccessDenied, FileTooBig, IsDir } || RunError;
 
-fn runFile(ruta: []const u8, diag: *std.ArrayList(CompError)) CompOrReadError!void {
+fn runFile(ruta: []const u8, buf: *std.ArrayList(u8), diag: *std.ArrayList(CompError)) CompOrReadError!void {
     var cwd = std.fs.cwd();
 
     const file = cwd.openFile(ruta, .{ .mode = .read_only }) catch |err| switch (err) {
@@ -152,10 +177,16 @@ fn runFile(ruta: []const u8, diag: *std.ArrayList(CompError)) CompOrReadError!vo
         error.IsDir => return error.IsDir,
         else => @panic("Error opening file"),
     };
-    const contents = file.readToEndAlloc(Allocator, MAX_USIZE) catch @panic("Error");
+
+    var lbuf: [500]u8 = std.mem.zeroes([500]u8);
+    while (file.read(&lbuf) catch null) |n| {
+        if (n == 0) break;
+        
+        cio.println("Read {} bytes", .{n});
+        buf.appendSlice(lbuf[0..n]) catch @panic("Failed to append to buf");
+    }
+
     file.close();
 
-    defer Allocator.free(contents);
-
-    try run(ruta, contents, diag);
+    try run(ruta, buf.items, diag);
 }

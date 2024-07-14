@@ -1,125 +1,77 @@
 #![deny(clippy::unwrap_used)]
 
-use std::env::args;
-use std::fs::read_to_string;
-use std::io::{stdin, Write};
-use std::iter::Enumerate;
-use std::path::PathBuf;
-use std::process::ExitCode;
-use std::str::{self, FromStr};
+mod scanner;
 
-fn editline() -> Result<(), AppError> {
-    let mut buf = String::new();
+use std::env::args;
+use std::fs::OpenOptions;
+use std::io::{stdin, Read, Write};
+use std::ops::Not;
+use std::path::Path;
+use std::process::ExitCode;
+use std::str::{self};
+
+fn editline(buf: &mut String) {
     while let Ok(n) = {
         print!("> ");
         std::io::stdout()
             .flush()
             .expect("We are not expecting flush to fail");
-        stdin().read_line(&mut buf)
+        stdin().read_line(buf)
     } {
         if n == 0 {
             break;
         }
-        if let Err(err) = run(&buf) {
+        if let Err(err) = run(Path::new("Editline"), buf) {
             for error in err {
                 println!("{error}");
             }
         };
         buf.clear();
     }
-
-    Ok(())
 }
 
-enum TokenType {
-    // Single-character tokens.
-    LEFT_PAREN,
-    RIGHT_PAREN,
-    LEFT_BRACE,
-    RIGHT_BRACE,
-    COMMA,
-    DOT,
-    MINUS,
-    PLUS,
-    SEMICOLON,
-    SLASH,
-    STAR,
-    // One or two character tokens.
-    BANG,
-    BANG_EQUAL,
-    EQUAL,
-    EQUAL_EQUAL,
-    GREATER,
-    GREATER_EQUAL,
-    LESS,
-    LESS_EQUAL,
-    // Literals.
-    IDENTIFIER,
-    STRING,
-    NUMBER,
-    // Keywords.
-    AND,
-    CLASS,
-    ELSE,
-    FALSE,
-    FUN,
-    FOR,
-    IF,
-    NIL,
-    OR,
-    PRINT,
-    RETURN,
-    SUPER,
-    THIS,
-    TRUE,
-    VAR,
-    WHILE,
-    EOF,
-}
-
-struct Token {
-    tipo: TokenType,
-    lexeme: String,
-    // literal:Object ,
-    line: u8,
-}
-
-impl Token {
-    fn new(vtipo: TokenType, lexema: &str, linea: u8) -> Self {
-        Token {
-            tipo: vtipo,
-            lexeme: String::from(lexema),
-            // literal: literal,
-            line: linea,
+fn run<'src>(source: &'src Path, ibuf: &'src str) -> Result<(), Vec<CompError<'src>>> {
+    let mut errores = Vec::new();
+    let scanner = scanner::Scanner::new(ibuf);
+    for token in scanner {
+        match token {
+            Err(err) => errores.push(CompError::ScannerError(
+                source,
+                0,
+                0,
+                &ibuf[err.span.clone()],
+                err,
+            )),
+            Ok(token) => println!("{token:?}"),
         }
     }
-}
 
-fn run(ibuf: &str) -> Result<(), Vec<CompError>> {
-    let tokens: Vec<_> = ibuf.split_terminator(&[' ', '{', '}']).collect();
-    for st in tokens.iter() {
-        println!("{}", st);
+    if errores.is_empty().not() {
+        Err(errores)
+    } else {
+        Ok(())
     }
-
-    Err(vec![
-        CompError::Syntax("main.lox".into(), 1, 1),
-        CompError::Syntax("main.lox".into(), 2, 2),
-        CompError::Syntax("main.lox".into(), 3, 3),
-    ])
 }
 
-fn compf(file: &str) -> Result<(), AppError> {
-    println!("ARGS; {:?}", file);
-    let buf: String = read_to_string(file).map_err(|err| AppError::FileRead(file.into(), err))?;
-    run(&buf).map_err(AppError::CompErrors)
+fn compf<'src>(path: &'src Path, buf: &'src mut String) -> Result<(), AppError<'src>> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|e| AppError::FileRead(path, e))?;
+
+    let n = file
+        .read_to_string(buf)
+        .map_err(|e| AppError::FileRead(path, e))?;
+
+    run(path, &buf[..n]).map_err(AppError::CompErrors)
 }
 
 #[derive(Debug)]
-enum CompError {
-    Syntax(PathBuf, usize, usize),
+enum CompError<'src> {
+    ScannerError(&'src Path, usize, usize, &'src str, scanner::Error),
 }
 
-impl std::fmt::Display for CompError {
+impl std::fmt::Display for CompError<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         macro_rules! report {
             ($ruta:expr, $line:expr, $col:expr, $($arg:tt)*) => {
@@ -128,26 +80,35 @@ impl std::fmt::Display for CompError {
         }
 
         match self {
-            CompError::Syntax(ruta, line, col) => {
-                report!(ruta.display(), line, col, "Invalid syntax")
+            CompError::ScannerError(ruta, line, col, token, error) => {
+                report!(
+                    ruta.display(),
+                    line,
+                    col,
+                    "Scanner error with token {token:?}: {error:?}"
+                )
             }
         }
     }
 }
 
 #[derive(Debug)]
-enum AppError {
-    FileRead(PathBuf, std::io::Error),
+enum AppError<'src> {
+    FileRead(&'src Path, std::io::Error),
     WrongArgs,
-    CompErrors(Vec<CompError>),
+    CompErrors(Vec<CompError<'src>>),
 }
 
 fn main() -> ExitCode {
     let args: Vec<_> = args().skip(1).collect();
+    let mut buf = String::new();
 
     let res = match args.as_slice() {
-        [] => editline(),
-        [file] => compf(file),
+        [] => {
+            editline(&mut buf);
+            Ok(())
+        }
+        [file] => compf(Path::new(file), &mut buf),
         _ => Err(AppError::WrongArgs),
     };
 

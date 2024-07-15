@@ -28,6 +28,7 @@ impl Error {
 pub enum ErrorKind {
     UnfinishedStr,
     UnknownToken,
+    InvalidNumber,
 }
 
 impl Iterator for Scanner<'_> {
@@ -38,6 +39,7 @@ impl Iterator for Scanner<'_> {
         let start = self.cursor.position - 1;
 
         let res = match c {
+            '0'..='9' => return Some(self.parse_number()),
             ' ' | '\n' | '\t' | '\r' => self.parse_space(),
             '(' => TokenType::LeftParen,
             ')' => TokenType::RightParen,
@@ -86,23 +88,7 @@ impl Iterator for Scanner<'_> {
                 }
                 _ => TokenType::Slash,
             },
-            '"' => loop {
-                match self.cursor.peek() {
-                    Some('"') => {
-                        self.cursor.bump();
-                        break TokenType::String;
-                    }
-                    None => {
-                        return Some(Err(Error::new(
-                            ErrorKind::UnfinishedStr,
-                            start..self.cursor.position,
-                        )));
-                    }
-                    Some(_) => {
-                        self.cursor.bump();
-                    }
-                }
-            },
+            '"' => return Some(self.parse_string()),
             _ => {
                 return Some(Err(Error::new(
                     ErrorKind::UnknownToken,
@@ -126,7 +112,62 @@ impl<'src> Scanner<'src> {
             }
         }
 
-        return TokenType::Whitespace;
+        TokenType::Whitespace
+    }
+    fn parse_number(&mut self) -> Result<Token, Error> {
+        let start = self.cursor.position - 1;
+        let mut punto = false;
+        let mut error = false;
+
+        loop {
+            match self.cursor.peek() {
+                Some('0'..='9') => self.cursor.bump(),
+                Some('.') => {
+                    if !punto && matches!(self.cursor.peek_nth(1), Some('0'..='9')) {
+                        self.cursor.bump();
+                        punto = true
+                    } else if punto && matches!(self.cursor.peek_nth(1), Some('0'..='9')) {
+                        self.cursor.bump();
+                        error = true;
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        if !error {
+            Ok(Token::new(TokenType::Number, start..self.cursor.position))
+        } else {
+            Err(Error::new(
+                ErrorKind::InvalidNumber,
+                start..self.cursor.position,
+            ))
+        }
+    }
+    fn parse_string(&mut self) -> Result<Token, Error> {
+        let start = self.cursor.position - 1;
+
+        loop {
+            match self.cursor.peek() {
+                Some('"') => {
+                    self.cursor.bump();
+                    break;
+                }
+                None => {
+                    return Err(Error::new(
+                        ErrorKind::UnfinishedStr,
+                        start..self.cursor.position,
+                    ));
+                }
+                Some(_) => {
+                    self.cursor.bump();
+                }
+            }; // match
+        } // loop
+
+        Ok(Token::new(TokenType::String, start..self.cursor.position))
     }
 }
 

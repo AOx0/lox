@@ -51,10 +51,12 @@ pub const Cursor = struct {
 
 pub const Scanner = struct {
     cursor: Cursor,
+    start: usize,
 
     pub fn new(source: []const u8) Scanner {
         return .{
-            .cursor = Cursor.new(source)
+            .cursor = Cursor.new(source),
+            .start = 0,
         };
     }
 
@@ -69,87 +71,97 @@ pub const Scanner = struct {
         return TokenType.Whitespace;
     }
 
-    pub fn next(self: *Scanner) ?Result {
-        const c = self.cursor.next() orelse return null;
-        const start = self.cursor.position - 1;
+    pub fn on_match(s: *@This(), char: u8, tt: TokenType) ?TokenType {
+        if (s.cursor.peek() orelse 0 == char) {
+            s.cursor.bumb();
+            return tt;
+        } else {
+            return null;
+        }
+    }
+
+    fn try_parse_comment(s: *@This()) ?TokenType {
+        if (s.cursor.peek() orelse 0 == '/') {
+            while (s.cursor.peek() orelse '\n' != '\n') s.cursor.bumb();
+            return TokenType.CommentLine;
+        }
+
+        return null;
+    }
+
+    fn try_parse_string(s: *@This()) ?TokenType {
+        while (true) {
+            s.cursor.bumb();
+            if (s.cursor.peek() orelse { return null; } == '"') {
+                s.cursor.bumb();
+                return TokenType.String;  
+            }
+        }
+    }
+
+    fn try_parse_number(s: *@This()) ?TokenType {
+        var seen_dot = false;
+        while (true) switch (s.cursor.peek() orelse 0) {
+            '0'...'9' => { s.cursor.bumb(); },
+            '.' => switch (s.cursor.peek_nth(1) orelse 0) {
+                '0'...'9' => {
+                    s.cursor.bumb();
+                    if (seen_dot) {
+                        while (true) if (s.cursor.peek()) |char| switch (char) {
+                            '0'...'9' => s.cursor.bumb(),
+                            '.' => s.cursor.bumb(),
+                            else => break,
+                        } else break;
+                        return null;
+                    }
+                    seen_dot = true;
+                },
+                // Allow `9.9.sqrt()`
+                //       `9.sqrt()`
+                else => return .Number,
+            },
+            else => return .Number,
+        };
+    }
+
+    fn prod_err(s: *@This(), kind: ErrorKind) Result {
+        return Result{
+            .Err = Error.new(kind, .{
+                .start = s.start,
+                .end = s.cursor.position
+            })
+        };
+    }
+
+    pub fn next(s: *Scanner) ?Result {
+        const c = s.cursor.next() orelse return null;
+        s.start = s.cursor.position - 1;
 
         const res = switch (c) {
-            ' ', '\t', '\r', '\n' => self.parse_space(),
-            '(' => TokenType.LeftParen,
-            ')' => TokenType.RightParen,
-            '{' => TokenType.LeftBrace,
-            '}' => TokenType.RightBrace,
-            ',' => TokenType.Comma,
-            '.' => TokenType.Dot,
-            '-' => TokenType.Minus,
-            '+' => TokenType.Plus,
-            ';' => TokenType.Semicolon,
-            '*' => TokenType.Star,
-            '!' => switch (self.cursor.peek() orelse 0) {
-                '=' => blk: {
-                    self.cursor.bumb();
-                    break :blk TokenType.BangEqual;
-                },
-                else => TokenType.Bang,
-            },
-            '=' => switch (self.cursor.peek() orelse 0) {
-                '=' => blk: {
-                    self.cursor.bumb();
-                    break :blk TokenType.EqualEqual;
-                },
-                else => TokenType.Equal,
-            },
-            '<' => switch (self.cursor.peek() orelse 0) {
-                '=' => blk: {
-                    self.cursor.bumb();
-                    break :blk TokenType.LessEqual;
-                },
-                else => TokenType.Less,
-            },
-            '>' => switch (self.cursor.peek() orelse 0) {
-                '=' => blk: {
-                    self.cursor.bumb();
-                    break :blk TokenType.GreaterEqual;
-                },
-                else => TokenType.Greater,
-            },
-            '/' => switch (self.cursor.peek() orelse 0) {
-                '/' => blk: {
-                    while (self.cursor.peek() orelse 0 != '\n') {
-                        self.cursor.bumb();
-                    }
-                    break :blk TokenType.CommentLine;
-                },
-                else => TokenType.Slash,
-            },
-            '"' => blk: while (true) {
-                switch (self.cursor.peek() orelse 
-                    return Result{
-                        .Err = Error.new
-                        (ErrorKind.UnfinishString, .{
-                       .start = start,
-                       .end = self.cursor.position, 
-                    })}
-                ) {
-                    '"' =>{
-                          self.cursor.bumb();
-                          break :blk TokenType.String;  
-                    },
-                    else => self.cursor.bumb(),
-                }
-            },
-            else => {
-                return Result{.Err = Error.new
-                    (ErrorKind.Unknown, .{
-                   .start = start,
-                   .end = self.cursor.position, 
-                })};
-            },
+            ' ', '\t', '\r', '\n' => s.parse_space(),
+            '0'...'9' => s.try_parse_number() orelse return s.prod_err(.InvalidNumber),
+            '(' => .LeftParen,
+            ')' => .RightParen,
+            '{' => .LeftBrace,
+            '}' => .RightBrace,
+            ',' => .Comma,
+            '.' => .Dot,
+            '-' => .Minus,
+            '+' => .Plus,
+            ';' => .Semicolon,
+            '*' => .Star,
+            '!' => s.on_match('=', .BangEqual) orelse .Bang,
+            '=' => s.on_match('=', .EqualEqual) orelse .Equal,
+            '<' => s.on_match('=', .LessEqual) orelse .Less,
+            '>' => s.on_match('=', .GreaterEqual) orelse .Greater,
+            '/' => s.try_parse_comment() orelse .Slash,
+            '"' => s.try_parse_string() orelse return s.prod_err(.UnfinishString),
+            else => return s.prod_err(.Unknown)
         };
 
         return Result{.Ok = Token.new(res, .{
-           .start = start,
-           .end = self.cursor.position, 
+           .start = s.start,
+           .end = s.cursor.position, 
         })};
     } 
 };
@@ -184,6 +196,7 @@ pub const TokenType = enum(u8) {
 pub const ErrorKind = enum(u8){
     Unknown,
     UnfinishString,
+    InvalidNumber,
 };
 
 pub const Error = struct {

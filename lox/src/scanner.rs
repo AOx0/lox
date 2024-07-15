@@ -1,5 +1,7 @@
 use std::ops::{Not, Range};
 
+type Tt = TokenKind;
+
 pub struct Scanner<'src> {
     cursor: Cursor<'src>,
 }
@@ -38,71 +40,64 @@ impl Iterator for Scanner<'_> {
         let c = self.cursor.next()?;
         let start = self.cursor.position - 1;
 
-        let res = match c {
-            '0'..='9' => return Some(self.parse_number()),
-            ' ' | '\n' | '\t' | '\r' => self.parse_space(),
-            '(' => TokenType::LeftParen,
-            ')' => TokenType::RightParen,
-            '{' => TokenType::LeftBrace,
-            '}' => TokenType::RightBrace,
-            ',' => TokenType::Comma,
-            '.' => TokenType::Dot,
-            '-' => TokenType::Minus,
-            '+' => TokenType::Plus,
-            ';' => TokenType::Semicolon,
-            '*' => TokenType::Star,
-            '!' => match self.cursor.peek() {
-                Some('=') => {
-                    self.cursor.bump();
-                    TokenType::BangEqual
-                }
-                _ => TokenType::Bang,
-            },
-            '=' => match self.cursor.peek() {
-                Some('=') => {
-                    self.cursor.bump();
-                    TokenType::EqualEqual
-                }
-                _ => TokenType::Equal,
-            },
-            '>' => match self.cursor.peek() {
-                Some('=') => {
-                    self.cursor.bump();
-                    TokenType::GreaterEqual
-                }
-                _ => TokenType::Greater,
-            },
-            '<' => match self.cursor.peek() {
-                Some('=') => {
-                    self.cursor.bump();
-                    TokenType::LessEqual
-                }
-                _ => TokenType::Less,
-            },
-            '/' => match self.cursor.peek() {
-                Some('/') => {
-                    while self.cursor.peek().is_some_and(|c| c != '\n') {
-                        self.cursor.bump();
-                    }
-                    TokenType::CommentLine
-                }
-                _ => TokenType::Slash,
-            },
-            '"' => return Some(self.parse_string()),
-            _ => {
-                return Some(Err(Error::new(
-                    ErrorKind::UnknownToken,
-                    start..self.cursor.position,
-                )))
-            }
-        };
-
-        Some(Ok(Token::new(res, start..self.cursor.position)))
+        match self.parse_next(c) {
+            Ok(tt) => Some(Ok(Token::new(tt, start..self.cursor.position))),
+            Err(err) => Some(Err(Error::new(err, start..self.cursor.position))),
+        }
     }
 }
 
 impl<'src> Scanner<'src> {
-    fn parse_space(&mut self) -> TokenType {
+    fn parse_next(&mut self, c: char) -> Result<TokenKind, ErrorKind> {
+        Ok(match c {
+            '0'..='9' => self.parse_number().ok_or(ErrorKind::InvalidNumber)?,
+            ' ' | '\n' | '\t' | '\r' => self.parse_space(),
+            '(' => Tt::LeftParen,
+            ')' => Tt::RightParen,
+            '{' => Tt::LeftBrace,
+            '}' => Tt::RightBrace,
+            ',' => Tt::Comma,
+            '.' => Tt::Dot,
+            '-' => Tt::Minus,
+            '+' => Tt::Plus,
+            ';' => Tt::Semicolon,
+            '*' => Tt::Star,
+            '!' => self.on_match('=', |_| Tt::BangEqual).unwrap_or(Tt::Bang),
+            '=' => self.on_match('=', |_| Tt::EqualEqual).unwrap_or(Tt::Equal),
+            '>' => self
+                .on_match('=', |_| Tt::GreaterEqual)
+                .unwrap_or(Tt::Greater),
+            '<' => self.on_match('=', |_| Tt::LessEqual).unwrap_or(Tt::Less),
+            '/' => self
+                .on_match('/', |s| {
+                    while s.cursor.peek().unwrap_or('\n') != '\n' {
+                        s.cursor.bump()
+                    }
+
+                    Tt::CommentLine
+                })
+                .unwrap_or(Tt::Slash),
+            '"' => self.parse_string().ok_or(ErrorKind::UnfinishedStr)?,
+            _ => return Err(ErrorKind::UnknownToken),
+        })
+    }
+}
+
+impl<'src> Scanner<'src> {
+    fn on_match(
+        &mut self,
+        char: char,
+        mut action: impl FnMut(&mut Self) -> TokenKind,
+    ) -> Option<TokenKind> {
+        matches!(self.cursor.peek(), Some(c) if c == char).then(|| {
+            self.cursor.bump();
+            action(self)
+        })
+    }
+}
+
+impl<'src> Scanner<'src> {
+    fn parse_space(&mut self) -> TokenKind {
         let empty = [' ', '\t', '\r', '\n'];
         while let Some(c) = self.cursor.peek() {
             if empty.contains(&c) {
@@ -112,68 +107,52 @@ impl<'src> Scanner<'src> {
             }
         }
 
-        TokenType::Whitespace
+        TokenKind::Whitespace
     }
-    fn parse_number(&mut self) -> Result<Token, Error> {
-        let start = self.cursor.position - 1;
-        let mut punto = false;
-        let mut error = false;
 
-        loop {
-            match self.cursor.peek() {
-                Some('0'..='9') => self.cursor.bump(),
-                Some('.') => {
-                    if !punto && matches!(self.cursor.peek_nth(1), Some('0'..='9')) {
-                        self.cursor.bump();
-                        punto = true
-                    } else if punto && matches!(self.cursor.peek_nth(1), Some('0'..='9')) {
-                        self.cursor.bump();
-                        error = true;
-                    } else {
-                        break;
-                    }
+    fn bump_while(&mut self, predicate: impl Fn(char) -> bool) {
+        while predicate(self.cursor.peek().unwrap_or_default()) {
+            self.cursor.bump()
+        }
+    }
+
+    fn parse_number(&mut self) -> Option<TokenKind> {
+        let mut punto = false;
+
+        while let Some(c) = self.cursor.peek() {
+            let nxt_is_num = || matches!(self.cursor.peek_nth(1), Some('0'..='9'));
+            match c {
+                '0'..='9' => self.cursor.bump(),
+                '.' if nxt_is_num() && punto => {
+                    self.bump_while(|c| c.is_ascii_digit() || c == '.');
+                    return None;
+                }
+                '.' if nxt_is_num() && !punto => {
+                    self.cursor.bump();
+                    punto = true
                 }
                 _ => break,
             }
         }
 
-        if !error {
-            Ok(Token::new(TokenType::Number, start..self.cursor.position))
-        } else {
-            Err(Error::new(
-                ErrorKind::InvalidNumber,
-                start..self.cursor.position,
-            ))
-        }
+        Some(TokenKind::Number)
     }
-    fn parse_string(&mut self) -> Result<Token, Error> {
-        let start = self.cursor.position - 1;
 
-        loop {
-            match self.cursor.peek() {
-                Some('"') => {
-                    self.cursor.bump();
-                    break;
-                }
-                None => {
-                    return Err(Error::new(
-                        ErrorKind::UnfinishedStr,
-                        start..self.cursor.position,
-                    ));
-                }
-                Some(_) => {
-                    self.cursor.bump();
-                }
-            }; // match
-        } // loop
+    fn parse_string(&mut self) -> Option<TokenKind> {
+        while let Some(c) = self.cursor.peek() {
+            self.cursor.bump();
+            if c == '"' {
+                return Some(TokenKind::String);
+            }
+        }
 
-        Ok(Token::new(TokenType::String, start..self.cursor.position))
+        None
     }
 }
 
 #[allow(dead_code)]
 #[derive(Debug)]
-pub enum TokenType {
+pub enum TokenKind {
     And,
     Bang,
     BangEqual,
@@ -219,12 +198,12 @@ pub enum TokenType {
 
 #[derive(Debug)]
 pub struct Token {
-    pub tipo: TokenType,
+    pub tipo: TokenKind,
     pub span: Range<usize>,
 }
 
 impl Token {
-    fn new(vtipo: TokenType, span: Range<usize>) -> Self {
+    fn new(vtipo: TokenKind, span: Range<usize>) -> Self {
         Token { tipo: vtipo, span }
     }
 }

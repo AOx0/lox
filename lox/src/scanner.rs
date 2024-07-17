@@ -1,27 +1,30 @@
-use std::ops::{Not, Range};
+use crate::span::Span;
+use std::ops::Not;
 
-type Tt = TokenKind;
+type Tk = TokenKind;
 
 pub struct Scanner<'src> {
     cursor: Cursor<'src>,
+    start: usize,
 }
 
 impl<'src> Scanner<'src> {
     pub fn new(src: &'src str) -> Scanner {
         Scanner {
             cursor: Cursor::new(src),
+            start: 0,
         }
     }
 }
 
 #[derive(Debug)]
 pub struct Error {
-    pub span: Range<usize>,
+    pub span: Span,
     pub kind: ErrorKind,
 }
 
 impl Error {
-    fn new(kind: ErrorKind, span: Range<usize>) -> Self {
+    fn new(kind: ErrorKind, span: Span) -> Self {
         Error { span, kind }
     }
 }
@@ -38,11 +41,17 @@ impl Iterator for Scanner<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let c = self.cursor.next()?;
-        let start = self.cursor.position - 1;
+        self.start = self.cursor.position - 1;
 
         match self.parse_next(c) {
-            Ok(tt) => Some(Ok(Token::new(tt, start..self.cursor.position))),
-            Err(err) => Some(Err(Error::new(err, start..self.cursor.position))),
+            Ok(tt) => Some(Ok(Token::new(
+                tt,
+                Span::from(self.start..self.cursor.position),
+            ))),
+            Err(err) => Some(Err(Error::new(
+                err,
+                Span::from(self.start..self.cursor.position),
+            ))),
         }
     }
 }
@@ -50,33 +59,34 @@ impl Iterator for Scanner<'_> {
 impl<'src> Scanner<'src> {
     fn parse_next(&mut self, c: char) -> Result<TokenKind, ErrorKind> {
         Ok(match c {
+            'a'..='z' | 'A'..='Z' | '_' => self.parse_reserved().unwrap_or(Tk::Identifier),
             '0'..='9' => self.parse_number().ok_or(ErrorKind::InvalidNumber)?,
             ' ' | '\n' | '\t' | '\r' => self.parse_space(),
-            '(' => Tt::LeftParen,
-            ')' => Tt::RightParen,
-            '{' => Tt::LeftBrace,
-            '}' => Tt::RightBrace,
-            ',' => Tt::Comma,
-            '.' => Tt::Dot,
-            '-' => Tt::Minus,
-            '+' => Tt::Plus,
-            ';' => Tt::Semicolon,
-            '*' => Tt::Star,
-            '!' => self.on_match('=', |_| Tt::BangEqual).unwrap_or(Tt::Bang),
-            '=' => self.on_match('=', |_| Tt::EqualEqual).unwrap_or(Tt::Equal),
+            '(' => Tk::LeftParen,
+            ')' => Tk::RightParen,
+            '{' => Tk::LeftBrace,
+            '}' => Tk::RightBrace,
+            ',' => Tk::Comma,
+            '.' => Tk::Dot,
+            '-' => Tk::Minus,
+            '+' => Tk::Plus,
+            ';' => Tk::Semicolon,
+            '*' => Tk::Star,
+            '!' => self.on_match('=', |_| Tk::BangEqual).unwrap_or(Tk::Bang),
+            '=' => self.on_match('=', |_| Tk::EqualEqual).unwrap_or(Tk::Equal),
             '>' => self
-                .on_match('=', |_| Tt::GreaterEqual)
-                .unwrap_or(Tt::Greater),
-            '<' => self.on_match('=', |_| Tt::LessEqual).unwrap_or(Tt::Less),
+                .on_match('=', |_| Tk::GreaterEqual)
+                .unwrap_or(Tk::Greater),
+            '<' => self.on_match('=', |_| Tk::LessEqual).unwrap_or(Tk::Less),
             '/' => self
                 .on_match('/', |s| {
                     while s.cursor.peek().unwrap_or('\n') != '\n' {
                         s.cursor.bump()
                     }
 
-                    Tt::CommentLine
+                    Tk::CommentLine
                 })
-                .unwrap_or(Tt::Slash),
+                .unwrap_or(Tk::Slash),
             '"' => self.parse_string().ok_or(ErrorKind::UnfinishedStr)?,
             _ => return Err(ErrorKind::UnknownToken),
         })
@@ -116,6 +126,29 @@ impl<'src> Scanner<'src> {
         }
     }
 
+    fn parse_reserved(&mut self) -> Option<TokenKind> {
+        self.bump_while(|c| c.is_ascii_digit() || c.is_ascii_alphabetic() || c == '_');
+        Some(match &self.cursor.orig[self.start..self.cursor.position] {
+            "if" => Tk::If,
+            "or" => Tk::Or,
+            "and" => Tk::And,
+            "for" => Tk::For,
+            "fun" => Tk::Fun,
+            "var" => Tk::Var,
+            "nil" => Tk::Nil,
+            "else" => Tk::Else,
+            "true" => Tk::True,
+            "this" => Tk::This,
+            "class" => Tk::Class,
+            "false" => Tk::False,
+            "print" => Tk::Print,
+            "super" => Tk::Super,
+            "while" => Tk::While,
+            "return" => Tk::Return,
+            _ => return None,
+        })
+    }
+
     fn parse_number(&mut self) -> Option<TokenKind> {
         let mut punto = false;
 
@@ -140,9 +173,13 @@ impl<'src> Scanner<'src> {
 
     fn parse_string(&mut self) -> Option<TokenKind> {
         while let Some(c) = self.cursor.peek() {
-            self.cursor.bump();
             if c == '"' {
+                self.cursor.bump();
                 return Some(TokenKind::String);
+            } else if ['\n', '\r'].contains(&c) {
+                return None;
+            } else {
+                self.cursor.bump();
             }
         }
 
@@ -199,16 +236,17 @@ pub enum TokenKind {
 #[derive(Debug)]
 pub struct Token {
     pub tipo: TokenKind,
-    pub span: Range<usize>,
+    pub span: Span,
 }
 
 impl Token {
-    fn new(vtipo: TokenKind, span: Range<usize>) -> Self {
+    fn new(vtipo: TokenKind, span: Span) -> Self {
         Token { tipo: vtipo, span }
     }
 }
 struct Cursor<'src> {
     source: &'src str,
+    orig: &'src str,
     prev: Option<char>,
     curr: Option<char>,
     position: usize,
@@ -217,18 +255,11 @@ impl<'src> Cursor<'src> {
     fn new(src: &'src str) -> Cursor {
         Cursor {
             source: src,
+            orig: src,
             prev: None,
             curr: None,
             position: 0,
         }
-    }
-
-    fn prev(&self) -> Option<char> {
-        self.prev
-    }
-
-    fn curr(&self) -> Option<char> {
-        self.curr
     }
 
     fn peek(&self) -> Option<char> {

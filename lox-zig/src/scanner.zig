@@ -99,6 +99,12 @@ pub const Scanner = struct {
         }
     }
 
+    fn bump_while(s: *@This(), f: fn(u8) bool) void {
+        while (f(s.cursor.peek() orelse 0)) {
+            s.cursor.bumb();
+        }
+    }
+
     fn try_parse_number(s: *@This()) ?TokenType {
         var seen_dot = false;
         while (true) switch (s.cursor.peek() orelse 0) {
@@ -107,11 +113,13 @@ pub const Scanner = struct {
                 '0'...'9' => {
                     s.cursor.bumb();
                     if (seen_dot) {
-                        while (true) if (s.cursor.peek()) |char| switch (char) {
-                            '0'...'9' => s.cursor.bumb(),
-                            '.' => s.cursor.bumb(),
-                            else => break,
-                        } else break;
+                        s.bump_while(struct { fn f(c: u8) bool {
+                            return switch (c) {
+                                '0'...'9' => true,
+                                '.' => true,
+                                else => false
+                            };
+                        } }.f);
                         return null;
                     }
                     seen_dot = true;
@@ -133,11 +141,55 @@ pub const Scanner = struct {
         };
     }
 
+    fn parse_reserved(s: *@This()) ?TokenType {
+        s.bump_while(struct { fn f(c: u8) bool {
+            return switch (c) {
+                '0'...'9', 'a'...'z', 'A'...'Z', '_' => true,
+                else => false,
+            };
+        }}.f);
+
+        const string: []const u8 = s.cursor.source[s.start..s.cursor.position];
+
+        switch (string.len) {
+            2 => {
+                if (std.mem.eql(u8, string, "if")) return .If;
+                if (std.mem.eql(u8, string, "or")) return .Or;
+            },
+            3 => {
+                if (std.mem.eql(u8, string, "and")) return .And;
+                if (std.mem.eql(u8, string, "for")) return .For;
+                if (std.mem.eql(u8, string, "fun")) return .Fun;
+                if (std.mem.eql(u8, string, "var")) return .Var;
+                if (std.mem.eql(u8, string, "nil")) return .Nil;
+            },
+            4 => {
+                if (std.mem.eql(u8, string, "else")) return .Else;
+                if (std.mem.eql(u8, string, "true")) return .True;
+                if (std.mem.eql(u8, string, "this")) return .This;
+            },
+            5 => {
+                if (std.mem.eql(u8, string, "class")) return .Class;
+                if (std.mem.eql(u8, string, "false")) return .False;
+                if (std.mem.eql(u8, string, "print")) return .Print;
+                if (std.mem.eql(u8, string, "super")) return .Super;
+                if (std.mem.eql(u8, string, "while")) return .While;
+            },
+            6 => {
+                if (std.mem.eql(u8, string, "return")) return .Return;
+            },
+            else => return null,
+        }
+            
+        return null;
+    }
+
     pub fn next(s: *Scanner) ?Result {
         const c = s.cursor.next() orelse return null;
         s.start = s.cursor.position - 1;
 
         const res = switch (c) {
+            'a'...'z', 'A'...'Z', '_' => s.parse_reserved() orelse TokenType.Identifier,
             ' ', '\t', '\r', '\n' => s.parse_space(),
             '0'...'9' => s.try_parse_number() orelse return s.prod_err(.InvalidNumber),
             '(' => .LeftParen,

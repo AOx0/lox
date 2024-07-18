@@ -1,5 +1,6 @@
 #![deny(clippy::unwrap_used)]
 #![feature(let_chains)]
+#![feature(try_trait_v2)]
 
 mod ast;
 mod parser;
@@ -15,6 +16,7 @@ use std::process::ExitCode;
 use std::str::{self};
 
 use owo_colors::OwoColorize;
+use parser::Parser;
 use span::Span;
 
 fn editline(buf: &mut String) {
@@ -65,47 +67,15 @@ fn run<'src>(source: &'src Path, ibuf: &'src str) -> Result<(), Vec<CompError<'s
         })
         .collect();
 
-    let span = || Span::from(0..0);
-    let expr = ast::Expression {
-        span: span(),
-        item: ast::ExpressionItem::Binary(ast::Binary {
-            span: span(),
-            items: (
-                Box::new(ast::Expression {
-                    span: span(),
-                    item: ast::ExpressionItem::Unary(ast::Unary {
-                        span: span(),
-                        kind: ast::UnaryKind::Menos,
-                        item: Box::new(ast::Expression {
-                            span: span(),
-                            item: ast::ExpressionItem::Literal(ast::Literal {
-                                span: span(),
-                                item: ast::LiteralItem::Number(1234.),
-                            }),
-                        }),
-                    }),
-                }),
-                Box::new(ast::Expression {
-                    span: span(),
-                    item: ast::ExpressionItem::Grouping(Box::new(ast::Expression {
-                        span: span(),
-                        item: ast::ExpressionItem::Literal(ast::Literal {
-                            span: span(),
-                            item: ast::LiteralItem::Number(45.67),
-                        }),
-                    })),
-                }),
-            ),
-            kind: ast::BinaryKind::Mul,
-        }),
-    };
-
-    println!("{expr:#?}");
-
     if errores.is_empty().not() {
         Err(errores)
     } else {
-        println!("{tokens:?}");
+        let mut parser = Parser::new(&tokens, &ibuf);
+
+        let res = parser.parse();
+
+        println!("{:?}", res);
+
         Ok(())
     }
 }

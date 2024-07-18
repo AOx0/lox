@@ -1,32 +1,33 @@
-use std::ops::{Deref, DerefMut, Range};
+use std::ops::Range;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[repr(transparent)]
-pub struct Span(Range<usize>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span(usize, usize);
 
 impl From<Range<usize>> for Span {
     fn from(value: Range<usize>) -> Self {
-        Span(value)
-    }
-}
-
-impl Deref for Span {
-    type Target = Range<usize>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Span {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        Span(value.start, value.end)
     }
 }
 
 impl Span {
-    pub fn range(&self) -> &Range<usize> {
-        self.deref()
+    pub fn join(&self, rhs: Span) -> Span {
+        Span::from(self.0..rhs.1)
+    }
+
+    pub fn range(&self) -> Range<usize> {
+        self.0..self.1
+    }
+
+    pub fn off_start(&mut self, offset: usize) {
+        self.0 += offset;
+    }
+
+    pub fn off_end(&mut self, offset: usize) {
+        self.1 += offset;
+    }
+
+    pub fn len(&self) -> usize {
+        self.1 - self.0
     }
 
     pub fn get_line_col(&self, source: &str) -> (usize, usize) {
@@ -55,16 +56,16 @@ impl Span {
     }
 
     pub fn get_col(&self, source: &str) -> usize {
-        source[..self.start]
+        source[..self.0]
             .chars()
             .rev()
             .position(|c| c == '\n')
-            .unwrap_or(self.start)
+            .unwrap_or(self.0)
             + 1
     }
 
     pub fn get_line(&self, source: &str) -> usize {
-        source[..self.start].chars().filter(|a| a == &'\n').count() + 1
+        source[..self.0].chars().filter(|a| a == &'\n').count() + 1
     }
 }
 

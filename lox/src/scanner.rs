@@ -188,7 +188,7 @@ impl<'src> Scanner<'src> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum TokenKind {
     And,
     Bang,
@@ -233,7 +233,7 @@ pub enum TokenKind {
     Whitespace,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Token {
     pub tipo: TokenKind,
     pub span: Span,

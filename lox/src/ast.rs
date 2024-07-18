@@ -1,6 +1,6 @@
 use crate::span::Span;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum BinaryKind {
     Sum,
     Sub,
@@ -18,46 +18,40 @@ pub enum BinaryKind {
     Or,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum UnaryKind {
     Menos,
     Bang,
 }
 
-#[derive(Debug)]
-pub enum LiteralItem {
+#[derive(Debug, PartialEq)]
+pub enum Literal {
     Number(f64),
     String(String),
     Bool(bool),
 }
 
-#[derive(Debug)]
-pub struct Literal {
-    pub span: Span,
-    pub item: LiteralItem,
-}
-
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Expression {
     pub span: Span,
     pub item: ExpressionItem,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Unary {
     pub span: Span,
     pub kind: UnaryKind,
     pub item: Box<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Binary {
     pub span: Span,
     pub items: (Box<Expression>, Box<Expression>),
     pub kind: BinaryKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ExpressionItem {
     Binary(Binary),
     Unary(Unary),

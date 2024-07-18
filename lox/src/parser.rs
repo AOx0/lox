@@ -6,8 +6,6 @@ pub use crate::{
     span::Span,
 };
 
-mod expr;
-
 pub type PResult<T, E = ErrorKind> = Option<Result<T, E>>;
 
 #[derive(Debug, Clone, Copy)]

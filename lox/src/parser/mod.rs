@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::ast;
 pub use crate::{
     scanner::{Token, TokenKind},
@@ -10,6 +12,7 @@ pub type PResult<T, E = ErrorKind> = Option<Result<T, E>>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Parser<'src> {
+    ruta: &'src Path,
     source: &'src str,
     tokens: &'src [Token],
     cursor: usize,
@@ -29,15 +32,15 @@ pub enum ErrorKind {
 }
 
 #[derive(Debug)]
-pub struct Error<'src> {
-    source: &'src str,
-    span: Span,
-    kind: ErrorKind,
+pub struct Error {
+    pub span: Span,
+    pub kind: ErrorKind,
 }
 
 impl<'src> Parser<'src> {
-    pub fn new(tokens: &'src [Token], source: &'src str) -> Parser<'src> {
+    pub fn new(ruta: &'src Path, tokens: &'src [Token], source: &'src str) -> Parser<'src> {
         Parser {
+            ruta,
             tokens,
             cursor: 0,
             source,
@@ -54,19 +57,15 @@ impl<'src> Parser<'src> {
         res.ok().map(|res| (res, p.cursor))
     }
 
-    fn err_span(&self, span: Span, kind: ErrorKind) -> Error<'src> {
-        Error {
-            source: self.source,
-            span,
-            kind,
-        }
+    fn err_span(&self, span: Span, kind: ErrorKind) -> Error {
+        Error { span, kind }
     }
 
-    fn err(&self, kind: ErrorKind) -> Error<'src> {
+    fn err(&self, kind: ErrorKind) -> Error {
         self.err_span(self.span().unwrap_or(Span::from(0..1)), kind)
     }
 
-    fn annotated_number(&'src mut self) -> Result<ast::Expression, Error<'src>> {
+    fn annotated_number(&'src mut self) -> Result<ast::Expression, Error> {
         let curr = self.advance().ok_or(self.err(ErrorKind::Eof))?;
         let mut track = curr.span;
 
@@ -117,7 +116,7 @@ impl<'src> Parser<'src> {
         Ok(ast::Expression { span: track, item })
     }
 
-    pub fn parse(&'src mut self) -> Result<ast::Expression, Error<'src>> {
+    pub fn parse(&'src mut self) -> Result<ast::Expression, Error> {
         self.annotated_number()
 
         // if let Some((res, c)) = self.try_parse(Self::parse_annotated_number) {

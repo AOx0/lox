@@ -48,8 +48,6 @@ fn run<'src>(source: &'src Path, ibuf: &'src str) -> Result<(), Vec<CompError<'s
             Err(err) => {
                 errores.push(CompError::ScannerError(ScannerError {
                     path: source,
-                    line: err.span.get_line(ibuf),
-                    col: err.span.get_col(ibuf),
                     invalid_token: &ibuf[err.span.range().clone()],
                     error: err,
                     source: ibuf,
@@ -70,11 +68,20 @@ fn run<'src>(source: &'src Path, ibuf: &'src str) -> Result<(), Vec<CompError<'s
     if errores.is_empty().not() {
         Err(errores)
     } else {
-        let mut parser = Parser::new(&tokens, &ibuf);
+        let mut parser = Parser::new(source, &tokens, ibuf);
 
         let res = parser.parse();
 
-        println!("{:?}", res);
+        match res {
+            Ok(res) => println!("{res:?}"),
+            Err(err) => {
+                return Err(vec![CompError::ParserError(ParserError {
+                    path: source,
+                    source: ibuf,
+                    error: err,
+                })])
+            }
+        }
 
         Ok(())
     }
@@ -94,10 +101,15 @@ fn compf<'src>(path: &'src Path, buf: &'src mut String) -> Result<(), AppError<'
 }
 
 #[derive(Debug)]
+struct ParserError<'src> {
+    path: &'src Path,
+    error: parser::Error,
+    source: &'src str,
+}
+
+#[derive(Debug)]
 struct ScannerError<'src> {
     path: &'src Path,
-    line: usize,
-    col: usize,
     invalid_token: &'src str,
     error: scanner::Error,
     source: &'src str,
@@ -106,6 +118,7 @@ struct ScannerError<'src> {
 #[derive(Debug)]
 enum CompError<'src> {
     ScannerError(ScannerError<'src>),
+    ParserError(ParserError<'src>),
 }
 
 impl std::fmt::Display for CompError<'_> {
@@ -117,55 +130,74 @@ impl std::fmt::Display for CompError<'_> {
         }
 
         match self {
+            CompError::ParserError(ParserError {
+                path,
+                source,
+                error,
+            }) => {
+                let line = error.span.get_line(source);
+                let col = error.span.get_col(source);
+                report!(path.display(), line, col, "Parser error: {:?}", error.kind)?;
+                display_context(error.span, source, f, line, col)
+            }
             CompError::ScannerError(ScannerError {
                 path: ruta,
-                line,
-                col,
                 invalid_token: token,
                 error,
                 source,
             }) => {
+                let line = error.span.get_line(source);
+                let col = error.span.get_col(source);
                 report!(
                     ruta.display(),
                     line,
                     col,
                     "Scanner error with token {token:?}: {error:?}"
                 )?;
-                let lines = error.span.get_context(source, -2..2);
-                let len = error.span.len();
-                let last_context_line = lines.last();
-
-                for (i, sr) in lines.iter() {
-                    write!(f, " ")?;
-                    write!(
-                        f,
-                        "{}",
-                        format!("{i: >4} | ").if_supports_color(owo_colors::Stream::Stdout, |s| {
-                            s.style(owo_colors::Style::new().bright_black())
-                        }),
-                    )?;
-                    writeln!(f, "{sr}")?;
-                    if i == line {
-                        write!(
-                            f,
-                            "{}{}",
-                            " ".repeat(col + 7),
-                            "^".repeat(len)
-                                .if_supports_color(owo_colors::Stream::Stdout, |s| {
-                                    s.style(owo_colors::Style::new().bold().yellow())
-                                }),
-                        )?;
-                        if let Some((last, _)) = last_context_line
-                            && last != line
-                        {
-                            writeln!(f)?;
-                        }
-                    }
-                }
-                Ok(())
+                display_context(error.span, source, f, line, col)
             }
         }
     }
+}
+
+fn display_context(
+    error_span: Span,
+    source: &&str,
+    f: &mut std::fmt::Formatter,
+    line: usize,
+    col: usize,
+) -> Result<(), std::fmt::Error> {
+    let lines = error_span.get_context(source, -2..2);
+    let len = error_span.len();
+    let last_context_line = lines.last();
+    for (i, sr) in lines.iter() {
+        write!(f, " ")?;
+        write!(
+            f,
+            "{}",
+            format!("{i: >4} | ").if_supports_color(owo_colors::Stream::Stdout, |s| {
+                s.style(owo_colors::Style::new().bright_black())
+            }),
+        )?;
+        writeln!(f, "{sr}")?;
+        if i == &line {
+            write!(
+                f,
+                "{}{}",
+                " ".repeat(col + 7),
+                "^".repeat(len)
+                    .if_supports_color(owo_colors::Stream::Stdout, |s| {
+                        s.style(owo_colors::Style::new().bold().yellow())
+                    }),
+            )?;
+            if let Some((last, _)) = last_context_line
+                && last != &line
+            {
+                writeln!(f)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]

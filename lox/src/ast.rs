@@ -25,13 +25,6 @@ pub enum UnaryKind {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum Literal {
-    Number(f64),
-    String(String),
-    Bool(bool),
-}
-
-#[derive(Debug, PartialEq)]
 pub struct Expression {
     pub span: Span,
     pub item: ExpressionItem,
@@ -55,6 +48,6 @@ pub struct Binary {
 pub enum ExpressionItem {
     Binary(Binary),
     Unary(Unary),
-    Literal(Literal),
+    Number(f64),
     Grouping(Box<Expression>),
 }

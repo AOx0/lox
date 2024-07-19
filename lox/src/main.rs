@@ -1,6 +1,5 @@
 #![deny(clippy::unwrap_used)]
 #![feature(let_chains)]
-#![feature(try_trait_v2)]
 
 mod ast;
 mod parser;
@@ -223,11 +222,15 @@ fn main() -> ExitCode {
     match res {
         Ok(_) => ExitCode::SUCCESS,
         Err(err) => {
-            eprint!("Error: ");
+            eprint!(
+                "{}",
+                "Error: ".if_supports_color(owo_colors::Stream::Stdout, |s| {
+                    s.style(owo_colors::Style::new().bold().red())
+                }),
+            );
             match err {
                 AppError::WrongArgs => eprintln!("Only expected FILE_NAME"),
                 AppError::CompErrors(errors) => {
-                    eprintln!("Failed to compile with errors: ");
                     for error in errors {
                         eprintln!("{error}");
                     }

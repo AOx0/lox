@@ -188,7 +188,7 @@ impl<'src> Scanner<'src> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum TokenKind {
     And,
     Bang,
@@ -197,6 +197,7 @@ pub enum TokenKind {
     Comma,
     CommentLine,
     Dot,
+    #[default]
     Eof,
     Else,
     Equal,

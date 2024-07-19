@@ -9,6 +9,12 @@ impl From<Range<usize>> for Span {
     }
 }
 
+impl Default for Span {
+    fn default() -> Self {
+        Span(0, 1)
+    }
+}
+
 impl Span {
     pub fn join(&self, rhs: Span) -> Span {
         Span::from(self.0..rhs.1)
@@ -18,12 +24,20 @@ impl Span {
         self.0..self.1
     }
 
-    pub fn off_start(&mut self, offset: usize) {
+    pub fn start(&self) -> usize {
+        self.0
+    }
+
+    pub fn end(&self) -> usize {
+        self.1
+    }
+
+    pub fn set_start(&mut self, offset: usize) {
         self.0 += offset;
     }
 
-    pub fn off_end(&mut self, offset: usize) {
-        self.1 += offset;
+    pub fn set_end(&mut self, offset: usize) {
+        self.1 = offset;
     }
 
     pub fn len(&self) -> usize {

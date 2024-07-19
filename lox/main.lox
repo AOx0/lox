@@ -1,8 +1,7 @@
-@@@
 // Your first Lox program! 
 print "Hello, world!";
-var average @ (min + max) / 2;
-var language "lox"; @
-var msg="Hola esto es una prueba;
+var average = (min + max) / 2;
+var language "lox";
+var msg="Hola esto es una prueba";
 var pi= 3.1416;
-var o = 3.3.3.3..3.3.3.3.3.3.3;
+var o = 3;

@@ -2,10 +2,10 @@ use crate::span::Span;
 
 #[derive(Debug, PartialEq)]
 pub enum BinaryKind {
-    Sum,
-    Sub,
-    Mul,
-    Div,
+    Plus,
+    Minus,
+    Star,
+    Slash,
     Mod,
     BangEqual,
     Equal,
@@ -20,7 +20,7 @@ pub enum BinaryKind {
 
 #[derive(Debug, PartialEq)]
 pub enum UnaryKind {
-    Menos,
+    Minus,
     Bang,
 }
 
@@ -31,23 +31,12 @@ pub struct Expression {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Unary {
-    pub span: Span,
-    pub kind: UnaryKind,
-    pub item: Box<Expression>,
-}
-
-#[derive(Debug, PartialEq)]
-pub struct Binary {
-    pub span: Span,
-    pub items: (Box<Expression>, Box<Expression>),
-    pub kind: BinaryKind,
-}
-
-#[derive(Debug, PartialEq)]
 pub enum ExpressionItem {
-    Binary(Binary),
-    Unary(Unary),
+    Binary(Box<Expression>, Box<Expression>, BinaryKind),
+    Unary(Box<Expression>, UnaryKind),
     Number(f64),
+    String(String),
+    Bool(bool),
+    Nil,
     Grouping(Box<Expression>),
 }

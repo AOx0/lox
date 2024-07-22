@@ -1,7 +1,7 @@
 use crate::span::Span;
 use std::ops::Not;
 
-type Tk = TokenKind;
+pub type Tk = TokenKind;
 
 pub struct Scanner<'src> {
     cursor: Cursor<'src>,
@@ -188,7 +188,7 @@ impl<'src> Scanner<'src> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TokenKind {
     And,
     Bang,
@@ -234,10 +234,25 @@ pub enum TokenKind {
     Whitespace,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Token {
     pub tipo: TokenKind,
     pub span: Span,
+}
+
+impl Token {
+    fn tipo(s: Option<Self>) -> Option<TokenKind> {
+        s.map(|t| t.tipo)
+    }
+}
+
+impl Default for Token {
+    fn default() -> Self {
+        Token {
+            tipo: TokenKind::Eof,
+            span: Span::from(0..1),
+        }
+    }
 }
 
 impl Token {

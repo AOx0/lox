@@ -2,6 +2,7 @@
 #![feature(let_chains)]
 
 mod ast;
+mod diag;
 mod parser;
 mod scanner;
 mod span;
@@ -14,9 +15,8 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::str::{self};
 
-use owo_colors::OwoColorize;
+use diag::Diagnostic;
 use parser::Parser;
-use span::Span;
 
 fn editline(buf: &mut String) {
     while let Ok(n) = {
@@ -38,19 +38,23 @@ fn editline(buf: &mut String) {
     }
 }
 
-fn run<'src>(source: &'src Path, ibuf: &'src str) -> Result<(), Vec<CompError<'src>>> {
-    let mut errores = Vec::new();
-    let scanner = scanner::Scanner::new(ibuf);
+fn run<'src>(path: &'src Path, source: &'src str) -> Result<(), Vec<CompError<'src>>> {
+    let scanner = scanner::Scanner::new(source);
+
     let tokens: Vec<_> = scanner
         .into_iter()
         .filter_map(|token| match token {
             Err(err) => {
-                errores.push(CompError::ScannerError(ScannerError {
-                    path: source,
-                    invalid_token: &ibuf[err.span.range().clone()],
-                    error: err,
-                    source: ibuf,
-                }));
+                Diagnostic::new(
+                    source,
+                    path,
+                    err.span,
+                    format!(
+                        "Scanner error with token {:?}: {err:?}",
+                        &source[err.span.range()]
+                    ),
+                )
+                .err();
                 None
             }
             Ok(token) => matches!(
@@ -64,26 +68,22 @@ fn run<'src>(source: &'src Path, ibuf: &'src str) -> Result<(), Vec<CompError<'s
         })
         .collect();
 
-    if errores.is_empty().not() {
-        Err(errores)
-    } else {
-        let mut parser = Parser::new(source, &tokens, ibuf);
+    let mut parser = Parser::new(path, &tokens, source);
 
-        let res = parser.parse();
+    let res = parser.parse();
 
-        match res {
-            Ok(res) => println!("{res:?}"),
-            Err(err) => {
-                return Err(vec![CompError::ParserError(ParserError {
-                    path: source,
-                    source: ibuf,
-                    error: err,
-                })])
-            }
-        }
-
-        Ok(())
+    match res {
+        Ok(res) => println!("{res:#?}"),
+        Err(err) => Diagnostic::new(
+            source,
+            path,
+            err.span,
+            format!("Error while parsing: {err:?}"),
+        )
+        .err(),
     }
+
+    Ok(())
 }
 
 fn compf<'src>(path: &'src Path, buf: &'src mut String) -> Result<(), AppError<'src>> {
@@ -96,7 +96,7 @@ fn compf<'src>(path: &'src Path, buf: &'src mut String) -> Result<(), AppError<'
         .read_to_string(buf)
         .map_err(|e| AppError::FileRead(path, e))?;
 
-    run(path, &buf[..n]).map_err(AppError::CompErrors)
+    run(path, &buf[..n]).map_err(|_| AppError::CompErrors)
 }
 
 #[derive(Debug)]
@@ -122,88 +122,35 @@ enum CompError<'src> {
 
 impl std::fmt::Display for CompError<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        macro_rules! report {
-            ($ruta:expr, $line:expr, $col:expr, $($arg:tt)*) => {
-                writeln!(f, "{}:{}:{} {}", $ruta, $line, $col, format_args!($($arg)*))
-            };
-        }
-
         match self {
             CompError::ParserError(ParserError {
                 path,
                 source,
                 error,
             }) => {
-                let line = error.span.get_line(source);
-                let col = error.span.get_col(source);
-                report!(path.display(), line, col, "Parser error: {:?}", error.kind)?;
-                display_context(error.span, source, f, line, col)
+                Diagnostic::new(source, path, error.span, format!("Parser error: {error:?}")).fmt(f)
             }
             CompError::ScannerError(ScannerError {
                 path: ruta,
                 invalid_token: token,
                 error,
                 source,
-            }) => {
-                let line = error.span.get_line(source);
-                let col = error.span.get_col(source);
-                report!(
-                    ruta.display(),
-                    line,
-                    col,
-                    "Scanner error with token {token:?}: {error:?}"
-                )?;
-                display_context(error.span, source, f, line, col)
-            }
+            }) => Diagnostic::new(
+                source,
+                ruta,
+                error.span,
+                format!("Scanner error with token {token:?}: {error:?}"),
+            )
+            .fmt(f),
         }
     }
-}
-
-fn display_context(
-    error_span: Span,
-    source: &&str,
-    f: &mut std::fmt::Formatter,
-    line: usize,
-    col: usize,
-) -> Result<(), std::fmt::Error> {
-    let lines = error_span.get_context(source, -2..2);
-    let len = error_span.len();
-    let last_context_line = lines.last();
-    for (i, sr) in lines.iter() {
-        write!(f, " ")?;
-        write!(
-            f,
-            "{}",
-            format!("{i: >4} | ").if_supports_color(owo_colors::Stream::Stdout, |s| {
-                s.style(owo_colors::Style::new().bright_black())
-            }),
-        )?;
-        writeln!(f, "{sr}")?;
-        if i == &line {
-            write!(
-                f,
-                "{}{}",
-                " ".repeat(col + 7),
-                "^".repeat(len)
-                    .if_supports_color(owo_colors::Stream::Stdout, |s| {
-                        s.style(owo_colors::Style::new().bold().yellow())
-                    }),
-            )?;
-            if let Some((last, _)) = last_context_line
-                && last != &line
-            {
-                writeln!(f)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug)]
 enum AppError<'src> {
     FileRead(&'src Path, std::io::Error),
     WrongArgs,
-    CompErrors(Vec<CompError<'src>>),
+    CompErrors,
 }
 
 fn main() -> ExitCode {
@@ -222,22 +169,12 @@ fn main() -> ExitCode {
     match res {
         Ok(_) => ExitCode::SUCCESS,
         Err(err) => {
-            eprint!(
-                "{}",
-                "Error: ".if_supports_color(owo_colors::Stream::Stdout, |s| {
-                    s.style(owo_colors::Style::new().bold().red())
-                }),
-            );
             match err {
                 AppError::WrongArgs => eprintln!("Only expected FILE_NAME"),
-                AppError::CompErrors(errors) => {
-                    for error in errors {
-                        eprintln!("{error}");
-                    }
-                }
                 AppError::FileRead(file, error) => {
                     eprintln!("Failed to read {:?}: {}", file.display(), error)
                 }
+                _ => {}
             }
             ExitCode::FAILURE
         }

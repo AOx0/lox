@@ -1,6 +1,6 @@
-use std::{ops::Not, path::Path};
+use std::path::Path;
 
-use crate::ast;
+use crate::{ast, diag::Diagnostic, scanner::Tk};
 pub use crate::{
     scanner::{Token, TokenKind},
     span::Span,
@@ -11,6 +11,7 @@ pub struct Parser<'src> {
     ruta: &'src Path,
     source: &'src str,
     tokens: &'src [Token],
+    prev: Token,
     cursor: usize,
 }
 
@@ -27,6 +28,8 @@ pub enum ErrorKind {
     Eof,
 }
 
+type Result<T> = std::prelude::rust_2021::Result<T, Error>;
+
 #[derive(Debug)]
 pub struct Error {
     pub span: Span,
@@ -40,10 +43,14 @@ impl<'src> Parser<'src> {
             tokens,
             cursor: 0,
             source,
+            prev: Token {
+                tipo: TokenKind::Eof,
+                span: Span::from(0..1),
+            },
         }
     }
 
-    fn try_parse<T>(&self, mut f: impl FnMut(&mut Self) -> Result<T, Error>) -> Option<(T, usize)> {
+    fn try_parse<T>(&self, mut f: impl FnMut(&mut Self) -> Result<T>) -> Option<(T, usize)> {
         let mut p = *self;
         let res = f(&mut p);
 
@@ -55,200 +62,286 @@ impl<'src> Parser<'src> {
     }
 
     fn err(&self, kind: ErrorKind) -> Error {
-        self.err_span(self.span().unwrap_or(Span::from(0..1)), kind)
+        self.err_span(self.span(), kind)
     }
 
-    fn annotated_number(&mut self) -> Result<f64, Error> {
-        let curr = self.advance().ok_or(self.err(ErrorKind::Eof))?;
-        let mut track = curr.span;
-
-        match curr.tipo {
-            x if matches!(x, TokenKind::Minus | TokenKind::Plus) => {
-                let number = self
-                    .advance_track(&mut track)
-                    .ok_or(self.err_span(track, ErrorKind::Eof))?;
-
-                if !matches!(number.tipo, TokenKind::Number) {
-                    return Err(self.err_span(
-                        track,
-                        ErrorKind::UnexpectedTokenKind(UnexpectedTokenKind {
-                            because: Some(x),
-                            found: number.tipo,
-                            expected: vec![TokenKind::Number],
-                        }),
-                    ));
+    fn primary(&mut self) -> Result<ast::Expression> {
+        if let Some(t @ Token { tipo, span }) = self.advance() {
+            match tipo {
+                Tk::Number => {
+                    let num = self.source[span.range()]
+                        .parse()
+                        .expect("The lexer does return a valid number span");
+                    return Ok(ast::Expression {
+                        span,
+                        item: ast::ExpressionItem::Number(num),
+                    });
                 }
+                Tk::True => {
+                    return Ok(ast::Expression {
+                        span,
+                        item: ast::ExpressionItem::Bool(true),
+                    });
+                }
+                Tk::False => {
+                    return Ok(ast::Expression {
+                        span,
+                        item: ast::ExpressionItem::Bool(false),
+                    });
+                }
+                Tk::String => {
+                    return Ok(ast::Expression {
+                        span,
+                        item: ast::ExpressionItem::String(
+                            self.source[span.range()].trim_matches('"').to_string(),
+                        ),
+                    });
+                }
+                Tk::Nil => {
+                    return Ok(ast::Expression {
+                        span,
+                        item: ast::ExpressionItem::Nil,
+                    });
+                }
+                TokenKind::LeftParen => {
+                    let expr = self.comparison()?;
 
-                Ok(if matches!(x, TokenKind::Minus) {
-                    -1.
-                } else {
-                    1.
-                } * self.source[number.span.range()]
-                    .parse::<f64>()
-                    .expect("The lexer returns valid numbers"))
+                    let token = self.peek().unwrap_or(t);
+                    if token.tipo != Tk::RightParen {
+                        Diagnostic::new(
+                            self.source,
+                            self.ruta,
+                            token.span,
+                            "Unclosed (".to_string(),
+                        )
+                        .err();
+                    }
+
+                    return Ok(expr);
+                }
+                x => {
+                    return Err(Error {
+                        span,
+                        kind: ErrorKind::UnexpectedTokenKind(UnexpectedTokenKind {
+                            because: None,
+                            expected: vec![Tk::Number, Tk::True, Tk::False, Tk::String, Tk::Nil],
+                            found: x,
+                        }),
+                    });
+                }
             }
-            TokenKind::Number => Ok(self.source[curr.span.range()]
-                .parse()
-                .expect("The lexer returns valid numbers")),
-            x => Err(self.err_span(
-                track,
-                ErrorKind::UnexpectedTokenKind(UnexpectedTokenKind {
-                    because: None,
-                    expected: vec![TokenKind::Number, TokenKind::Plus, TokenKind::Minus],
-                    found: x,
-                }),
-            )),
         }
+
+        Err(Error {
+            span: self.prev.span,
+            kind: ErrorKind::UnexpectedTokenKind(UnexpectedTokenKind {
+                because: None,
+                expected: vec![
+                    Tk::Number,
+                    Tk::True,
+                    Tk::False,
+                    Tk::String,
+                    Tk::Nil,
+                    Tk::LeftParen,
+                ],
+                found: TokenKind::Eof,
+            }),
+        })
     }
 
-    fn op_mul(&mut self) -> Result<ast::Expression, Error> {
-        let mut track = self.span().unwrap_or_default();
-        let rhs = if let Some((mul, c)) = self.try_parse(Self::op_mul) {
-            self.bump_to(c);
-            mul
-        } else {
-            self.num_or_group()?
-        };
+    fn unary(&mut self) -> Result<ast::Expression> {
+        'l: loop {
+            match self.partial_next_chunk::<2>().map(|t| t.tipo) {
+                [Tk::Bang, Tk::Bang] | [Tk::Minus, Tk::Minus] => {
+                    self.bump_n(2);
+                }
+                _ => break 'l,
+            }
+        }
 
-        let op = match self
-            .advance_track(&mut track)
-            .map(|t| t.tipo)
-            .unwrap_or_default()
+        if let Some(Token { tipo, .. }) = self.peek()
+            && (tipo == Tk::Minus || tipo == Tk::Bang)
         {
-            x @ TokenKind::Plus => x,
-            x @ TokenKind::Minus => x,
-            x => {
-                return Err(self.err_span(
-                    track,
-                    ErrorKind::UnexpectedTokenKind(UnexpectedTokenKind {
-                        because: None,
-                        expected: vec![TokenKind::Plus, TokenKind::Minus],
-                        found: x,
-                    }),
-                ))
-            }
+            let kind = match tipo {
+                Tk::Minus => ast::UnaryKind::Minus,
+                Tk::Bang => ast::UnaryKind::Bang,
+                _ => unreachable!("We did check it before"),
+            };
+
+            self.bump();
+            let unary = match self.unary() {
+                Ok(unary) => unary,
+                Err(err) => {
+                    Diagnostic::new(
+                        self.source,
+                        self.ruta,
+                        err.span,
+                        format!("Expected unary, but found error {err:?}"),
+                    )
+                    .err();
+                    return self.primary();
+                }
+            };
+            return Ok(ast::Expression {
+                span: unary.span,
+                item: ast::ExpressionItem::Unary(Box::new(unary), kind),
+            });
         };
 
-        self.num_or_group()
+        self.primary()
     }
 
-    fn mul_or_num(&mut self) -> Result<ast::Expression, Error> {
-        if let Some((mul, c)) = self.try_parse(Self::op_mul) {
-            self.bump_to(c);
-            Ok(mul)
-        } else {
-            let start = self.span().unwrap_or_default();
-            let num = self.annotated_number()?;
-            let end = start.join(self.prev_span().unwrap_or_default());
-            Ok(ast::Expression {
-                span: end,
-                item: ast::ExpressionItem::Number(num),
-            })
-        }
-    }
+    fn factor(&mut self) -> Result<ast::Expression> {
+        let mut lhs = self.unary()?;
 
-    fn op_sum(&mut self) -> Result<ast::Expression, Error> {
-        let mut track = self.span().unwrap_or_default();
-        let expr = if let Some((sum, c)) = self.try_parse(Self::op_sum) {
-            self.bump_to(c);
-            sum
-        } else if let Some((mul_num, c)) = self.try_parse(Self::mul_or_num) {
-            self.bump_to(c);
-            mul_num
-        } else {
-            todo!()
-        };
-
-        let op = match self
-            .advance_track(&mut track)
-            .map(|t| t.tipo)
-            .unwrap_or_default()
+        while let Some(Token { tipo, .. }) = self.peek()
+            && (tipo == Tk::Star || tipo == Tk::Slash)
         {
-            x @ TokenKind::Plus => x,
-            x @ TokenKind::Minus => x,
-            x => {
-                return Err(self.err_span(
-                    track,
-                    ErrorKind::UnexpectedTokenKind(UnexpectedTokenKind {
-                        because: None,
-                        expected: vec![TokenKind::Plus, TokenKind::Minus],
-                        found: x,
-                    }),
-                ))
-            }
-        };
+            let kind = match tipo {
+                Tk::Star => ast::BinaryKind::Star,
+                Tk::Slash => ast::BinaryKind::Slash,
+                _ => unreachable!("We did check it before"),
+            };
 
-        self.mul_or_num()
-    }
+            self.bump();
+            let rhs = match self.unary() {
+                Ok(rhs) => rhs,
+                Err(err) => {
+                    Diagnostic::new(
+                        self.source,
+                        self.ruta,
+                        err.span,
+                        format!("Expected unary, but found error {err:?}"),
+                    )
+                    .err();
+                    break;
+                }
+            };
 
-    fn expr(&mut self) -> Result<ast::Expression, Error> {
-        if let Some((sum, c)) = self.try_parse(Self::op_sum) {
-            self.bump_to(c);
-            Ok(sum)
-        } else if let Some((mul, c)) = self.try_parse(Self::op_mul) {
-            self.bump_to(c);
-            Ok(mul)
-        } else if let Some((num_group, c)) = self.try_parse(Self::num_or_group) {
-            self.bump_to(c);
-            Ok(num_group)
-        } else {
-            panic!()
-        }
-    }
-
-    fn num_or_group(&mut self) -> Result<ast::Expression, Error> {
-        if let Some((num, c)) = self.try_parse(Self::annotated_number) {
-            let start = self.span().unwrap_or_default();
-            self.bump_to(c);
-            let end = start.join(self.prev_span().unwrap_or_default());
-            Ok(ast::Expression {
-                span: end,
-                item: ast::ExpressionItem::Number(num),
-            })
-        } else {
-            self.group()
-        }
-    }
-
-    fn group(&mut self) -> Result<ast::Expression, Error> {
-        let token = self.advance().ok_or(self.err(ErrorKind::Eof))?;
-        let mut track = token.span;
-
-        if matches!(token.tipo, TokenKind::LeftParen).not() {
-            return Err(self.err_span(
-                track,
-                ErrorKind::UnexpectedTokenKind(UnexpectedTokenKind {
-                    because: None,
-                    expected: vec![TokenKind::LeftParen],
-                    found: token.tipo,
-                }),
-            ));
+            lhs = ast::Expression {
+                span: lhs.span.join(rhs.span),
+                item: ast::ExpressionItem::Binary(Box::new(lhs), Box::new(rhs), kind),
+            };
         }
 
-        let expr = self.expr()?;
-        track.set_end(self.prev_span().unwrap_or_default().end());
-        let tipo = self
-            .advance_track(&mut track)
-            .map(|a| a.tipo)
-            .unwrap_or(TokenKind::Eof);
-
-        if matches!(tipo, TokenKind::RightParen).not() {
-            return Err(self.err_span(
-                track,
-                ErrorKind::UnexpectedTokenKind(UnexpectedTokenKind {
-                    because: None,
-                    expected: vec![TokenKind::RightParen],
-                    found: tipo,
-                }),
-            ));
-        }
-
-        Ok(expr)
+        Ok(lhs)
     }
 
-    pub fn parse(&mut self) -> Result<ast::Expression, Error> {
-        self.expr()
+    fn term(&mut self) -> Result<ast::Expression> {
+        let mut lhs = self.factor()?;
 
+        while let Some(Token { tipo, .. }) = self.peek()
+            && (tipo == Tk::Plus || tipo == Tk::Minus)
+        {
+            let kind = match tipo {
+                Tk::Minus => ast::BinaryKind::Minus,
+                Tk::Plus => ast::BinaryKind::Plus,
+                _ => unreachable!("We did check it before"),
+            };
+
+            self.bump();
+            let rhs = match self.factor() {
+                Ok(rhs) => rhs,
+                Err(err) => {
+                    Diagnostic::new(
+                        self.source,
+                        self.ruta,
+                        err.span,
+                        format!("Expected factor, but found error {err:?}"),
+                    )
+                    .err();
+                    break;
+                }
+            };
+
+            lhs = ast::Expression {
+                span: lhs.span.join(rhs.span),
+                item: ast::ExpressionItem::Binary(Box::new(lhs), Box::new(rhs), kind),
+            };
+        }
+
+        Ok(lhs)
+    }
+
+    fn comparison(&mut self) -> Result<ast::Expression> {
+        let mut lhs = self.term()?;
+
+        while let Some(Token { tipo, .. }) = self.peek()
+            && (tipo == Tk::Less
+                || tipo == Tk::LessEqual
+                || tipo == Tk::GreaterEqual
+                || tipo == Tk::Greater)
+        {
+            let kind = match tipo {
+                Tk::Less => ast::BinaryKind::Less,
+                Tk::LessEqual => ast::BinaryKind::LessEqual,
+                Tk::GreaterEqual => ast::BinaryKind::GreaterEqual,
+                Tk::Greater => ast::BinaryKind::Greater,
+                _ => unreachable!("We did check it before"),
+            };
+
+            self.bump();
+            let rhs = match self.term() {
+                Ok(rhs) => rhs,
+                Err(err) => {
+                    Diagnostic::new(
+                        self.source,
+                        self.ruta,
+                        err.span,
+                        format!("Expected term, but found error {err:?}"),
+                    )
+                    .err();
+                    break;
+                }
+            };
+
+            lhs = ast::Expression {
+                span: lhs.span.join(rhs.span),
+                item: ast::ExpressionItem::Binary(Box::new(lhs), Box::new(rhs), kind),
+            };
+        }
+
+        Ok(lhs)
+    }
+
+    fn equality(&mut self) -> Result<ast::Expression> {
+        let mut lhs = self.comparison()?;
+
+        while let Some(Token { tipo, .. }) = self.peek()
+            && (tipo == Tk::EqualEqual || tipo == Tk::BangEqual)
+        {
+            let kind = match tipo {
+                Tk::BangEqual => ast::BinaryKind::BangEqual,
+                Tk::EqualEqual => ast::BinaryKind::EqualEqual,
+                _ => unreachable!("We did check it before"),
+            };
+
+            self.bump();
+            let rhs = match self.comparison() {
+                Ok(rhs) => rhs,
+                Err(err) => {
+                    Diagnostic::new(
+                        self.source,
+                        self.ruta,
+                        err.span,
+                        format!("Expected comparison, but found error {err:?}"),
+                    )
+                    .err();
+                    break;
+                }
+            };
+
+            lhs = ast::Expression {
+                span: lhs.span.join(rhs.span),
+                item: ast::ExpressionItem::Binary(Box::new(lhs), Box::new(rhs), kind),
+            };
+        }
+
+        Ok(lhs)
+    }
+
+    pub fn parse(&mut self) -> Result<ast::Expression> {
+        self.equality()
         // if let Some((res, c)) = self.try_parse(Self::parse_annotated_number) {
         //     self.bump_to(c);
         //     Ok(res)
@@ -270,12 +363,13 @@ impl Parser<'_> {
     }
 
     fn bump(&mut self) {
+        self.prev = self.tokens[self.cursor];
         self.cursor += 1;
     }
 
     fn track_bump(&mut self, track: &mut Span) {
         if let Some(t) = self.peek() {
-            track.set_end(t.span.len());
+            track.end = t.span.len();
         }
         self.bump();
     }
@@ -284,8 +378,8 @@ impl Parser<'_> {
         self.tokens.get(self.cursor - 1).map(|s| s.span)
     }
 
-    fn span(&self) -> Option<Span> {
-        self.tokens.get(self.cursor).map(|s| s.span)
+    fn span(&self) -> Span {
+        self.prev.span
     }
 
     fn advance_n<const N: usize>(&mut self) -> Option<[Token; N]> {
@@ -302,7 +396,7 @@ impl Parser<'_> {
     fn advance_track(&mut self, track: &mut Span) -> Option<Token> {
         let advance = self.advance();
         if let Some(ref t) = advance {
-            track.set_end(t.span.end())
+            track.end = t.span.end;
         }
         advance
     }
@@ -313,6 +407,21 @@ impl Parser<'_> {
     /// ```
     fn next_chunk<const N: usize>(&self) -> Option<&[Token; N]> {
         self.tokens[self.cursor..].first_chunk::<N>()
+    }
+
+    fn partial_next_chunk<const N: usize>(&self) -> [Token; N] {
+        let mut chunk = [Token::default(); N];
+
+        let _ = (0..N).try_for_each(|i| {
+            if let Some(t) = self.tokens.get(self.cursor + i).copied() {
+                chunk[i] = t;
+                Ok(())
+            } else {
+                Err(())
+            }
+        });
+
+        chunk
     }
 
     fn lookup_n(&self, n: usize) -> Option<Token> {
